@@ -24,11 +24,21 @@
 #include <linux/export.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
+#include <linux/rtc.h>
 #include <trace/events/power.h>
+
+/*OPPO 2012-11-27 zhzhyon Add for headset detect*/
+#ifdef CONFIG_VENDOR_EDIT
+#include <linux/wakelock.h>
+#endif
+/*OPPO 2012-11-27 zhzhyon Add end*/
 
 #include "power.h"
 
 const char *const pm_states[PM_SUSPEND_MAX] = {
+#ifdef CONFIG_EARLYSUSPEND
+	[PM_SUSPEND_ON]		= "on",
+#endif
 	[PM_SUSPEND_STANDBY]	= "standby",
 	[PM_SUSPEND_MEM]	= "mem",
 };
@@ -168,9 +178,23 @@ static int suspend_enter(suspend_state_t state, bool *wakeup)
 	if (!error) {
 		*wakeup = pm_wakeup_pending();
 		if (!(suspend_test(TEST_CORE) || *wakeup)) {
+		/*OPPO 2012-11-27 zhzhyon Add for headset detect*/
+		#ifdef CONFIG_VENDOR_EDIT
+		if(has_wake_lock(WAKE_LOCK_SUSPEND))
+		{
+			goto Resume_devices;
+		}
+		#endif
+		/*OPPO 2012-11-27 zhzhyon Add end*/
+		
 			error = suspend_ops->enter(state);
 			events_check_enabled = false;
 		}
+/*OPPO 2012-11-27 zhzhyon Add for headset detect*/
+#ifdef CONFIG_VENDOR_EDIT
+Resume_devices:
+#endif
+/*OPPO 2012-11-27 zhzhyon Add end*/
 		syscore_resume();
 	}
 
@@ -214,6 +238,14 @@ int suspend_devices_and_enter(suspend_state_t state)
 	suspend_console();
 	suspend_test_start();
 	error = dpm_suspend_start(PMSG_SUSPEND);
+	/*OPPO 2012-11-27 zhzhyon Add for reason*/
+	#ifdef CONFIG_VENDOR_EDIT
+	if(has_wake_lock(WAKE_LOCK_SUSPEND))
+	{
+		goto Resume_devices;
+	}
+	#endif
+	/*OPPO 2012-11-27 zhzhyon Add end*/	
 	if (error) {
 		printk(KERN_ERR "PM: Some devices failed to suspend\n");
 		goto Recover_platform;
@@ -275,10 +307,7 @@ static int enter_state(suspend_state_t state)
 	if (!mutex_trylock(&pm_mutex))
 		return -EBUSY;
 
-	printk(KERN_INFO "PM: Syncing filesystems ... ");
-	sys_sync();
-	printk("done.\n");
-
+	suspend_sys_sync_queue();
 	pr_debug("PM: Preparing system for %s sleep\n", pm_states[state]);
 	error = suspend_prepare();
 	if (error)
@@ -300,6 +329,18 @@ static int enter_state(suspend_state_t state)
 	return error;
 }
 
+static void pm_suspend_marker(char *annotation)
+{
+	struct timespec ts;
+	struct rtc_time tm;
+
+	getnstimeofday(&ts);
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_info("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC\n",
+		annotation, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
+}
+
 /**
  * pm_suspend - Externally visible function for suspending the system.
  * @state: System sleep state to enter.
@@ -314,6 +355,7 @@ int pm_suspend(suspend_state_t state)
 	if (state <= PM_SUSPEND_ON || state >= PM_SUSPEND_MAX)
 		return -EINVAL;
 
+	pm_suspend_marker("entry");
 	error = enter_state(state);
 	if (error) {
 		suspend_stats.fail++;
@@ -321,6 +363,7 @@ int pm_suspend(suspend_state_t state)
 	} else {
 		suspend_stats.success++;
 	}
+	pm_suspend_marker("exit");
 	return error;
 }
 EXPORT_SYMBOL(pm_suspend);
